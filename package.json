@@ -1,12 +1,16 @@
 {
-  "name": "faultline-technical-spike",
-  "version": "0.1.0",
+  "name": "faultline-core",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",
-    "spike": "tsx src/live-spike.ts"
+    "spike": "tsx src/live-spike.ts",
+    "demo": "tsx src/cli.ts --mode deterministic",
+    "demo:live": "tsx src/cli.ts --mode live",
+    "incident": "tsx src/cli.ts --mode deterministic",
+    "incident:live": "tsx src/cli.ts --mode live"
   },
   "dependencies": {
     "@mozaik-ai/core": "4.0.5"
