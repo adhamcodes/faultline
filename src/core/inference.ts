@@ -8,37 +8,162 @@ import {
   type SemanticEvent,
 } from "@mozaik-ai/core";
 
+import type {
+  ParticipantKey,
+  ProviderAttempt,
+  SafeProviderFailure,
+} from "./types.js";
+
 export const FAILED_INFERENCE_MARKER = "__FAULTLINE_INFERENCE_FAILED__";
 
 export interface InferenceFailure {
   input: InferenceInput;
-  error: unknown;
+  failure: SafeProviderFailure;
+}
+
+export interface LogicalTaskContext {
+  id: string;
+  participant: ParticipantKey;
+  stage: string;
+}
+
+export interface RetryNotice {
+  task: LogicalTaskContext;
+  failure: SafeProviderFailure;
+  delayMs: number;
+}
+
+export interface RetryConfiguration {
+  sleep?: (delayMs: number) => Promise<void>;
+  rateLimitDelayMs?: number;
+  transientDelayMs?: number;
+}
+
+export interface ResilientRunnerOptions extends RetryConfiguration {
+  resolveTask: (input: InferenceInput) => LogicalTaskContext | undefined;
+  onFailure: (failure: InferenceFailure) => void;
+  onRetry?: (notice: RetryNotice) => void;
+}
+
+const TRANSIENT_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
+
+function numericStatus(error: unknown): number | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const candidate = error as {
+    status?: unknown;
+    statusCode?: unknown;
+    code?: unknown;
+    cause?: { status?: unknown };
+  };
+  for (const value of [
+    candidate.status,
+    candidate.statusCode,
+    candidate.cause?.status,
+    candidate.code,
+  ]) {
+    if (typeof value === "number" && Number.isInteger(value) && value >= 100 && value <= 599) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+export function safeProviderFailure(error: unknown, attempt: number): SafeProviderFailure {
+  const rawName =
+    error && typeof error === "object" && typeof (error as { name?: unknown }).name === "string"
+      ? (error as { name: string }).name
+      : "Error";
+  const name = rawName.replace(/[^a-zA-Z0-9_.-]/g, "").slice(0, 80) || "Error";
+  const httpStatus = numericStatus(error);
+  return {
+    name,
+    ...(httpStatus === undefined ? {} : { httpStatus }),
+    retryable: httpStatus !== undefined && TRANSIENT_STATUSES.has(httpStatus),
+    attempt,
+  };
 }
 
 export class ResilientInferenceRunner implements InferenceRunner {
-  calls = 0;
+  providerAttempts = 0;
+  retries = 0;
+  readonly attempts: ProviderAttempt[] = [];
+  private retryConsumed = false;
+  private readonly sleep: (delayMs: number) => Promise<void>;
+  private readonly rateLimitDelayMs: number;
+  private readonly transientDelayMs: number;
 
   constructor(
     private readonly delegate: InferenceRunner,
-    private readonly onFailure: (failure: InferenceFailure) => void,
-  ) {}
+    private readonly options: ResilientRunnerOptions,
+  ) {
+    this.sleep = options.sleep ?? ((delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)));
+    this.rateLimitDelayMs = options.rateLimitDelayMs ?? 60_000;
+    this.transientDelayMs = options.transientDelayMs ?? 750;
+  }
 
   async run(input: InferenceInput): Promise<InferenceOutput> {
-    this.calls += 1;
-    try {
-      return await this.delegate.run(input);
-    } catch (error) {
-      this.onFailure({ input, error });
-      return {
-        items: [ModelMessageItem.rehydrate({ text: FAILED_INFERENCE_MARKER })],
-        tokenUsage: undefined,
-        rowResponse: undefined,
-      };
+    const task = this.options.resolveTask(input) ?? {
+      id: "unknown",
+      participant: "unknown" as const,
+      stage: "unknown",
+    };
+    let attempt = 1;
+
+    while (attempt <= 2) {
+      this.providerAttempts += 1;
+      const startedAt = new Date();
+      try {
+        const output = await this.delegate.run(input);
+        const finishedAt = new Date();
+        this.attempts.push({
+          logicalTaskId: task.id,
+          participant: task.participant,
+          stage: task.stage,
+          attempt,
+          startedAt: startedAt.toISOString(),
+          finishedAt: finishedAt.toISOString(),
+          durationMs: finishedAt.getTime() - startedAt.getTime(),
+          outcome: "succeeded",
+        });
+        return output;
+      } catch (error) {
+        const finishedAt = new Date();
+        const failure = safeProviderFailure(error, attempt);
+        this.attempts.push({
+          logicalTaskId: task.id,
+          participant: task.participant,
+          stage: task.stage,
+          attempt,
+          startedAt: startedAt.toISOString(),
+          finishedAt: finishedAt.toISOString(),
+          durationMs: finishedAt.getTime() - startedAt.getTime(),
+          outcome: "failed",
+          failure,
+        });
+
+        if (failure.retryable && !this.retryConsumed && attempt === 1) {
+          this.retryConsumed = true;
+          this.retries += 1;
+          const delayMs = failure.httpStatus === 429 ? this.rateLimitDelayMs : this.transientDelayMs;
+          this.options.onRetry?.({ task: task as LogicalTaskContext, failure, delayMs });
+          await this.sleep(delayMs);
+          attempt += 1;
+          continue;
+        }
+
+        this.options.onFailure({ input, failure });
+        return {
+          items: [ModelMessageItem.rehydrate({ text: FAILED_INFERENCE_MARKER })],
+          tokenUsage: undefined,
+          rowResponse: undefined,
+        };
+      }
     }
+
+    throw new Error("Unreachable retry state");
   }
 
   stream(input: InferenceInput): AsyncGenerator<SemanticEvent> {
-    this.calls += 1;
     return this.delegate.stream(input);
   }
 }
@@ -52,6 +177,7 @@ export function createMozaikDefaultInferenceRunner(): InferenceRunner {
 
 export interface DeterministicRunnerOptions {
   failTask?: string;
+  failureStatuses?: Partial<Record<string, number[]>>;
 }
 
 function lastUserText(input: InferenceInput): string {
@@ -151,16 +277,32 @@ export class DeterministicInferenceRunner implements InferenceRunner {
   calls = 0;
   active = 0;
   maximumActive = 0;
+  readonly attemptsByTask = new Map<string, number>();
 
   constructor(private readonly options: DeterministicRunnerOptions = {}) {}
 
   async run(input: InferenceInput): Promise<InferenceOutput> {
     const task = taskFromPrompt(lastUserText(input));
+    const taskAttempt = (this.attemptsByTask.get(task) ?? 0) + 1;
+    this.attemptsByTask.set(task, taskAttempt);
     this.calls += 1;
     this.active += 1;
     this.maximumActive = Math.max(this.maximumActive, this.active);
     try {
       await new Promise((resolve) => setTimeout(resolve, DELAYS[task] ?? 5));
+      const status = this.options.failureStatuses?.[task]?.[taskAttempt - 1];
+      if (status !== undefined) {
+        const error = Object.assign(
+          new Error("SENSITIVE_PROVIDER_PAYLOAD_MUST_NOT_PERSIST"),
+          {
+            name: "ApiError",
+            status,
+            headers: { authorization: "SENSITIVE_HEADER" },
+            responseBody: "SENSITIVE_RESPONSE_BODY",
+          },
+        );
+        throw error;
+      }
       if (this.options.failTask === task) throw new Error("deterministic injected inference failure");
       return {
         items: [

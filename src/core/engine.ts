@@ -18,6 +18,7 @@ import {
   FAILED_INFERENCE_MARKER,
   ResilientInferenceRunner,
   createMozaikDefaultInferenceRunner,
+  type RetryConfiguration,
 } from "./inference.js";
 import {
   CHALLENGE_SCHEMA,
@@ -34,6 +35,7 @@ import type {
   FaultlineRunArtifact,
   ParticipantKey,
   RunMode,
+  SafeProviderFailure,
 } from "./types.js";
 
 export const DEMO_INCIDENT =
@@ -88,17 +90,22 @@ export interface FaultlineOptions {
   inferenceRunner?: InferenceRunner;
   timeoutMs?: number;
   injectHandlerFailure?: ParticipantKey;
+  retry?: RetryConfiguration;
 }
 
 export interface FaultlineRun {
   artifact: FaultlineRunArtifact;
   inferenceCalls: number;
+  logicalInferenceTasks: number;
+  providerAttempts: number;
+  retries: number;
 }
 
 interface FailurePayload {
   participant: ParticipantKey;
   phase: string;
   kind: string;
+  provider?: SafeProviderFailure;
 }
 
 function answerText(context: SituationContext): string {
@@ -212,8 +219,10 @@ export async function runFaultline(options: FaultlineOptions = {}): Promise<Faul
   let maybeFinalize = (): void => {};
   let considerHypothesis = (): void => {};
   let considerRecovery = (): void => {};
+  let finalized = false;
 
   const emit = <TPayload>(type: string, key: ParticipantKey, payload: TPayload): void => {
+    if (finalized) return;
     const participantId = state.idsByKey.get(key)!;
     runtime.sendEvent(
       SemanticEvent.create(type, participantId, payload),
@@ -221,22 +230,47 @@ export async function runFaultline(options: FaultlineOptions = {}): Promise<Faul
     );
   };
 
-  const containFailure = (key: ParticipantKey, phase: string, error: unknown): void => {
-    if (state.participant(key).status === "failed") return;
-    const kind = error instanceof Error ? error.name : "Error";
-    state.markFailed(key, phase, kind);
+  const containFailure = (
+    key: ParticipantKey,
+    phase: string,
+    error: unknown,
+    provider?: SafeProviderFailure,
+  ): void => {
+    if (finalized || state.participant(key).status === "failed") return;
+    const kind = provider?.name ?? (error instanceof Error ? error.name : "Error");
+    state.markFailed(key, phase, kind, provider);
     emit<FailurePayload>("faultline.participant.failed", key, {
       participant: key,
       phase,
       kind,
+      ...(provider ? { provider } : {}),
     });
   };
 
   const baseRunner = options.inferenceRunner ?? createMozaikDefaultInferenceRunner();
-  const runner = new ResilientInferenceRunner(baseRunner, ({ input, error }) => {
-    const key = state.contextOwners.get(input.context.id);
-    if (key) containFailure(key, "inference", error);
+  const runner = new ResilientInferenceRunner(baseRunner, {
+    ...options.retry,
+    resolveTask: (input) => {
+      const participant = state.contextOwners.get(input.context.id);
+      if (!participant) return undefined;
+      const task = state.activeTasks.get(participant);
+      if (!task) return undefined;
+      return { id: task.id, participant, stage: task.stage };
+    },
+    onRetry: ({ task, failure, delayMs }) => {
+      emit("faultline.inference.retrying", task.participant, {
+        logicalTaskId: task.id,
+        stage: task.stage,
+        failure,
+        delayMs,
+      });
+    },
+    onFailure: ({ input, failure }) => {
+      const key = state.contextOwners.get(input.context.id);
+      if (key) containFailure(key, "inference", failure, failure);
+    },
   });
+  state.artifact.inference.attempts = runner.attempts;
 
   runtime.initializeRuntime({
     state,
@@ -252,6 +286,7 @@ export async function runFaultline(options: FaultlineOptions = {}): Promise<Faul
     withParticipantBoundary(
       specification,
       (context) => {
+        if (finalized) return;
         if (
           options.injectHandlerFailure === key &&
           phase === "publish-output"
@@ -269,8 +304,13 @@ export async function runFaultline(options: FaultlineOptions = {}): Promise<Faul
     prompt: string,
     schema: Record<string, unknown>,
   ): boolean => {
-    if (state.participant(key).status === "failed" || state.activeTasks.has(key)) return false;
+    if (finalized || state.participant(key).status === "failed" || state.activeTasks.has(key)) return false;
+    if (state.artifact.inference.logicalTasks >= 8) {
+      containFailure(key, "logical-task-budget", new Error("Logical inference task budget exhausted"));
+      return false;
+    }
     state.activeTasks.set(key, task);
+    state.artifact.inference.logicalTasks += 1;
     const agent = agents[key];
     const structuredOutput: StructuredOutputFormat = {
       name: task.stage.replace(/[^a-z0-9_-]/gi, "_"),
@@ -291,6 +331,7 @@ export async function runFaultline(options: FaultlineOptions = {}): Promise<Faul
     kind: ActiveTask["kind"],
     stage: string,
   ): ActiveTask => ({
+    id: `task-${String(state.artifact.inference.logicalTasks + 1).padStart(3, "0")}`,
     kind,
     stage,
     basisKey: basisKey(state),
@@ -570,16 +611,38 @@ export async function runFaultline(options: FaultlineOptions = {}): Promise<Faul
         "faultline.recommendation.published",
         "faultline.recommendation.updated",
         "faultline.participant.failed",
+        "faultline.inference.retrying",
       ].includes(event.type),
     ),
     processor: {
       apply({ event }) {
+        if (finalized) return;
         if (event.type === "inference.started") {
           state.recordInferenceStarted(event);
           return;
         }
         if (event.type === "model.answer") {
-          state.recordModelAnswer(event);
+          const key = state.keysById.get(event.producerId);
+          const text = answerText({ event, participant: coordinator });
+          const successful = text !== FAILED_INFERENCE_MARKER && (!key || state.participant(key).status !== "failed");
+          state.recordModelAnswer(event, successful);
+          if (!successful && key) {
+            state.activeTasks.delete(key);
+            maybeFinalize();
+          }
+          return;
+        }
+        if (event.type === "faultline.inference.retrying") {
+          const payload = event.payload as {
+            logicalTaskId: string;
+            failure: SafeProviderFailure;
+            delayMs: number;
+          };
+          state.appendJournal(
+            event,
+            `Transient HTTP ${payload.failure.httpStatus ?? "unknown"} scheduled retry attempt ${payload.failure.attempt + 1} after ${payload.delayMs}ms.`,
+            [payload.logicalTaskId],
+          );
           return;
         }
         if (event.type === "faultline.evidence.published") {
@@ -604,7 +667,10 @@ export async function runFaultline(options: FaultlineOptions = {}): Promise<Faul
         }
         if (event.type === "faultline.participant.failed") {
           const payload = event.payload as FailurePayload;
-          state.appendJournal(event, `${payload.participant} failed at the FAULTLINE boundary during ${payload.phase}.`);
+          state.appendJournal(
+            event,
+            `${payload.participant} failed at the FAULTLINE boundary during ${payload.phase}${payload.provider?.httpStatus ? ` with HTTP ${payload.provider.httpStatus}` : ""}.`,
+          );
           considerHypothesis();
           considerRecovery();
           maybeFinalize();
@@ -624,7 +690,6 @@ export async function runFaultline(options: FaultlineOptions = {}): Promise<Faul
   for (const key of Object.keys(agents) as ParticipantKey[]) runtime.join(agents[key]);
 
   let finishRun: (artifact: FaultlineRunArtifact) => void = () => {};
-  let finalized = false;
   const completion = new Promise<FaultlineRunArtifact>((resolve) => {
     finishRun = resolve;
   });
@@ -647,7 +712,9 @@ export async function runFaultline(options: FaultlineOptions = {}): Promise<Faul
           ? "partial"
           : "failed";
     state.artifact.incident.completedAt = completedAt.toISOString();
-    state.artifact.geminiCalls = mode === "live" ? runner.calls : 0;
+    state.artifact.inference.providerAttempts = runner.providerAttempts;
+    state.artifact.inference.retries = runner.retries;
+    state.artifact.geminiCalls = mode === "live" ? runner.providerAttempts : 0;
     state.finishTiming(completedAt);
     const latestHypothesis = state.artifact.hypotheses.at(-1);
     const latestRecommendation = state.artifact.remediations.at(-1);
@@ -710,5 +777,11 @@ export async function runFaultline(options: FaultlineOptions = {}): Promise<Faul
 
   const artifact = await completion;
   clearTimeout(timeout);
-  return { artifact, inferenceCalls: runner.calls };
+  return {
+    artifact,
+    inferenceCalls: runner.providerAttempts,
+    logicalInferenceTasks: artifact.inference.logicalTasks,
+    providerAttempts: runner.providerAttempts,
+    retries: runner.retries,
+  };
 }

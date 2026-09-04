@@ -8,9 +8,11 @@ import type {
   ParticipantKey,
   ParticipantStatus,
   RunMode,
+  SafeProviderFailure,
 } from "./types.js";
 
 export interface ActiveTask {
+  id: string;
   kind: "investigator" | "hypothesis" | "skeptic" | "recovery";
   stage: string;
   basisKey: string;
@@ -45,6 +47,13 @@ export class FaultlineRuntimeState extends RuntimeState {
       mode,
       model,
       geminiCalls: 0,
+      inference: {
+        logicalTasks: 0,
+        providerAttempts: 0,
+        retries: 0,
+        retryBudget: 1,
+        attempts: [],
+      },
       incident: {
         id: `incident-${runId}`,
         text: incidentText,
@@ -139,7 +148,7 @@ export class FaultlineRuntimeState extends RuntimeState {
     );
   }
 
-  recordModelAnswer(event: SemanticEvent): void {
+  recordModelAnswer(event: SemanticEvent, successful: boolean): void {
     const key = this.keysById.get(event.producerId);
     if (!key) return;
     const participant = this.participant(key);
@@ -155,11 +164,19 @@ export class FaultlineRuntimeState extends RuntimeState {
     participant.durationMs =
       new Date(participant.finishedAt).getTime() -
       new Date(participant.startedAt ?? participant.finishedAt).getTime();
-    if (participant.status !== "failed") participant.status = "completed";
-    this.appendJournal(event, `${participant.name} completed inference.`);
+    if (successful) {
+      if (participant.status !== "failed") participant.status = "completed";
+      this.appendJournal(event, `${participant.name} completed inference.`);
+    }
   }
 
-  markFailed(key: ParticipantKey, phase: string, kind: string, at = new Date()): void {
+  markFailed(
+    key: ParticipantKey,
+    phase: string,
+    kind: string,
+    provider?: SafeProviderFailure,
+    at = new Date(),
+  ): void {
     const participant = this.participant(key);
     if (participant.status === "failed") return;
     participant.status = "failed";
@@ -167,8 +184,13 @@ export class FaultlineRuntimeState extends RuntimeState {
     participant.durationMs = participant.startedAt
       ? at.getTime() - new Date(participant.startedAt).getTime()
       : 0;
-    participant.failure = { phase, kind, timestamp: iso(at) };
-    this.activeTasks.delete(key);
+    participant.failure = {
+      phase,
+      kind,
+      timestamp: iso(at),
+      ...(provider ? { provider } : {}),
+    };
+    if (phase !== "inference") this.activeTasks.delete(key);
     this.artifact.resilience.failuresContained += 1;
   }
 

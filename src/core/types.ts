@@ -34,7 +34,35 @@ export interface ParticipantStatus {
     phase: string;
     kind: string;
     timestamp: string;
+    provider?: SafeProviderFailure;
   };
+}
+
+export interface SafeProviderFailure {
+  name: string;
+  httpStatus?: number;
+  retryable: boolean;
+  attempt: number;
+}
+
+export interface ProviderAttempt {
+  logicalTaskId: string;
+  participant: ParticipantKey | "unknown";
+  stage: string;
+  attempt: number;
+  startedAt: string;
+  finishedAt: string;
+  durationMs: number;
+  outcome: "succeeded" | "failed";
+  failure?: SafeProviderFailure;
+}
+
+export interface InferenceAccounting {
+  logicalTasks: number;
+  providerAttempts: number;
+  retries: number;
+  retryBudget: 1;
+  attempts: ProviderAttempt[];
 }
 
 export interface EvidenceItem {
@@ -146,7 +174,9 @@ export interface FaultlineRunArtifact {
   runId: string;
   mode: RunMode;
   model: string;
+  /** @deprecated Use inference.providerAttempts for provider-call accounting. */
   geminiCalls: number;
+  inference: InferenceAccounting;
   incident: IncidentMetadata;
   participants: ParticipantStatus[];
   evidence: EvidenceItem[];

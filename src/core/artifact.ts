@@ -19,8 +19,14 @@ export function assertRunArtifact(value: unknown): asserts value is FaultlineRun
   ] as const) {
     if (!Array.isArray(artifact[field])) throw new Error(`Artifact field ${field} must be an array`);
   }
-  if (!artifact.timing || !artifact.finalSummary || !artifact.resilience) {
+  if (!artifact.timing || !artifact.finalSummary || !artifact.resilience || !artifact.inference) {
     throw new Error("Artifact is missing completion summaries");
+  }
+  if (
+    !Array.isArray(artifact.inference.attempts) ||
+    artifact.inference.providerAttempts !== artifact.inference.attempts.length
+  ) {
+    throw new Error("Artifact inference accounting is inconsistent");
   }
 }
 

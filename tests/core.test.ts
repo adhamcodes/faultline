@@ -19,6 +19,10 @@ describe("FAULTLINE deterministic production core", () => {
 
     assert.equal(artifact.incident.status, "complete");
     assert.equal(inferenceCalls, 8);
+    assert.equal(artifact.inference.logicalTasks, 8);
+    assert.equal(artifact.inference.providerAttempts, 8);
+    assert.equal(artifact.inference.retries, 0);
+    assert.equal(artifact.inference.attempts.length, 8);
     assert.equal(artifact.geminiCalls, 0);
     assert.equal(artifact.evidence.length, 3);
     assert.equal(artifact.evidence.every((item) => item.observation.length > 0), true);
@@ -57,6 +61,7 @@ describe("FAULTLINE deterministic production core", () => {
       artifact.timeline.map((item) => item.sequence),
       artifact.timeline.map((_, index) => index + 1),
     );
+    assert.equal(artifact.timeline.at(-1)?.eventType, "faultline.incident.completed");
     assert.equal(
       artifact.timeline.every(
         (item) =>
@@ -85,6 +90,7 @@ describe("FAULTLINE deterministic production core", () => {
       assert.equal(parsed.runId, artifact.runId);
       assert.equal(parsed.incident.text, customIncident);
       assert.equal(parsed.timeline.length > 0, true);
+      assert.equal(parsed.inference.providerAttempts, parsed.inference.attempts.length);
       assert.equal(JSON.stringify(parsed).includes("[object Map]"), false);
     } finally {
       await rm(directory, { recursive: true, force: true });

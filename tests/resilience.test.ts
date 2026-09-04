@@ -67,5 +67,49 @@ describe("failure behavior and FAULTLINE containment", () => {
       true,
     );
     assert.equal(artifact.finalSummary?.failures.includes("log-investigator"), true);
+    assert.equal(artifact.timeline.at(-1)?.eventType, "faultline.incident.completed");
+  });
+
+  it("stops after a second transient failure, closes timing, and finalizes last", async () => {
+    const runner = new DeterministicInferenceRunner({
+      failureStatuses: { "hypothesis:revision": [503, 503] },
+    });
+    const { artifact, logicalInferenceTasks, providerAttempts, retries } = await runFaultline({
+      mode: "deterministic",
+      inferenceRunner: runner,
+      retry: { sleep: async () => {} },
+      timeoutMs: 2_000,
+    });
+
+    assert.equal(artifact.incident.status, "partial");
+    assert.equal(logicalInferenceTasks, 7);
+    assert.equal(providerAttempts, 8);
+    assert.equal(retries, 1);
+    assert.equal(artifact.inference.logicalTasks, 7);
+    assert.equal(artifact.inference.providerAttempts, 8);
+    assert.equal(artifact.inference.retries, 1);
+    assert.equal(artifact.hypotheses.length, 1);
+    assert.equal(artifact.remediations.length, 1);
+    const failed = artifact.participants.find((item) => item.key === "hypothesis-analyst");
+    assert.deepEqual(failed?.failure?.provider, {
+      name: "ApiError",
+      httpStatus: 503,
+      retryable: true,
+      attempt: 2,
+    });
+    const failedExecution = artifact.timing.executions.find(
+      (item) => item.stage === "hypothesis:revision",
+    );
+    assert.equal(failedExecution?.finishedAt !== undefined, true);
+    assert.equal(failedExecution?.durationMs !== undefined, true);
+    assert.equal(artifact.timeline.at(-1)?.eventType, "faultline.incident.completed");
+    const completionIndex = artifact.timeline.findIndex(
+      (item) => item.eventType === "faultline.incident.completed",
+    );
+    assert.equal(completionIndex, artifact.timeline.length - 1);
+    const serialized = JSON.stringify(artifact);
+    assert.equal(serialized.includes("SENSITIVE_PROVIDER_PAYLOAD"), false);
+    assert.equal(serialized.includes("SENSITIVE_HEADER"), false);
+    assert.equal(serialized.includes("SENSITIVE_RESPONSE_BODY"), false);
   });
 });

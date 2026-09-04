@@ -45,7 +45,7 @@ function parseArguments(args: string[]): CliOptions {
 }
 
 function printResult(path: string, result: Awaited<ReturnType<typeof runFaultline>>): void {
-  const { artifact, inferenceCalls } = result;
+  const { artifact } = result;
   const initialHypothesis = artifact.hypotheses[0];
   const finalHypothesis = artifact.hypotheses.at(-1);
   const recommendation = artifact.remediations.at(-1);
@@ -62,7 +62,9 @@ function printResult(path: string, result: Awaited<ReturnType<typeof runFaultlin
   if (recommendation) {
     console.log(`Recommendation [${recommendation.gate.status}]: ${recommendation.action}`);
   }
-  console.log(`Inference calls: ${inferenceCalls}`);
+  console.log(
+    `Inference: logical tasks=${result.logicalInferenceTasks}, provider attempts=${result.providerAttempts}, retries=${result.retries}`,
+  );
   console.log(`Run artifact: ${path}`);
 }
 
