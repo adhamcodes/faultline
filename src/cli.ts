@@ -92,7 +92,12 @@ async function main(): Promise<void> {
         ? { model: process.env.FAULTLINE_GEMINI_MODEL }
         : {}),
     ...(cli.mode === "deterministic"
-      ? { inferenceRunner: new DeterministicInferenceRunner() }
+      ? {
+          inferenceRunner: new DeterministicInferenceRunner({
+            failureStatuses: { "hypothesis:revision": [429] },
+          }),
+          retry: { sleep: async () => {} },
+        }
       : {}),
   };
 

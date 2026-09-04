@@ -197,7 +197,7 @@ function deterministicResponse(task: string): Record<string, unknown> {
     case "investigator:telemetry":
       return {
         category: "telemetry",
-        observation: "The latency and error jump begins at the v2.4.1 deployment boundary while database CPU rises.",
+        observation: "At 14:03, p95 rose from 180ms to 2.8s as cache hit rate fell from 93% to 41% and database CPU climbed from 48% to 96%.",
         confidence: 0.92,
         supports: [],
         contradicts: [],
@@ -205,7 +205,7 @@ function deterministicResponse(task: string): Record<string, unknown> {
     case "investigator:change":
       return {
         category: "changes",
-        observation: "Version v2.4.1 is the only recorded change aligned with the incident onset.",
+        observation: "Version v2.4.1 changed checkout cache-key normalization at 14:02, with no database, configuration, or infrastructure deployment in the incident window.",
         confidence: 0.86,
         supports: ["ev-001"],
         contradicts: [],
@@ -213,14 +213,14 @@ function deterministicResponse(task: string): Record<string, unknown> {
     case "investigator:logs":
       return {
         category: "logs",
-        observation: "Checkout traces show database wait timeouts following cache misses, linking cache degradation to database saturation.",
+        observation: "Checkout traces show cache MISS followed by database pool waits and timeouts while read-query volume rises sharply.",
         confidence: 0.9,
         supports: ["ev-001", "ev-002"],
         contradicts: [],
       };
     case "hypothesis:initial":
       return {
-        statement: "The v2.4.1 deployment likely introduced a checkout-path regression that increased database work.",
+        statement: "Deployment v2.4.1 appears correlated with increased checkout database work.",
         confidence: 0.58,
         supportingEvidenceIds: ["ev-001"],
         contradictingEvidenceIds: [],
@@ -228,7 +228,7 @@ function deterministicResponse(task: string): Record<string, unknown> {
       };
     case "hypothesis:revision":
       return {
-        statement: "The deployment likely degraded cache effectiveness, amplifying checkout database load until saturation caused latency and errors.",
+        statement: "The v2.4.1 checkout cache-key normalization change likely collapsed cache effectiveness, driving database saturation, latency, and checkout failures.",
         confidence: 0.88,
         supportingEvidenceIds: ["ev-001", "ev-002", "ev-003"],
         contradictingEvidenceIds: [],

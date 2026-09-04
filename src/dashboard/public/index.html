@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <meta name="description" content="FAULTLINE concurrent AI incident command dashboard">
+    <title>FAULTLINE — Incident Command</title>
+    <link rel="stylesheet" href="/assets/styles.css">
+    <script type="module" src="/assets/app.js"></script>
+  </head>
+  <body>
+    <div class="shell">
+      <header class="appbar">
+        <a class="brand" href="/" aria-label="FAULTLINE home">
+          <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span>FAULTLINE</span>
+        </a>
+        <div class="appbar-center">
+          <span class="live-dot" aria-hidden="true"></span>
+          <span>Incident command surface</span>
+        </div>
+        <label class="run-picker">
+          <span>RUN</span>
+          <select id="run-select" aria-label="Select run artifact"></select>
+        </label>
+      </header>
+      <main id="app" aria-live="polite">
+        <section class="loading-state">
+          <div class="loading-pulse"></div>
+          <p>Loading latest incident artifact…</p>
+        </section>
+      </main>
+      <footer class="footer">
+        <span>READ-ONLY COMMAND SURFACE</span>
+        <span>Local artifact projection · No provider connection</span>
+      </footer>
+    </div>
+  </body>
+</html>

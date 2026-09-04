@@ -39,7 +39,7 @@ import type {
 } from "./types.js";
 
 export const DEMO_INCIDENT =
-  "Immediately after deployment v2.4.1, API p95 latency increased from 180ms to 2.8s and checkout errors rose from 0.4% to 17%. Database CPU rose sharply while cache hit rate dropped.";
+  "At 14:03, one minute after deployment v2.4.1, API p95 latency jumped from 180ms to 2.8s and checkout errors rose from 0.4% to 17%. Telemetry shows cache hit rate falling from 93% to 41% and database CPU rising from 48% to 96%. Checkout traces show cache MISS followed by database pool waits and timeouts while read-query volume climbs sharply. The v2.4.1 change set modified checkout cache-key normalization; no database, configuration, or infrastructure deployment occurred in the same window.";
 
 const PARTICIPANTS: Record<
   ParticipantKey,

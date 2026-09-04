@@ -5,12 +5,13 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test tests/*.test.ts",
-    "spike": "tsx src/live-spike.ts",
-    "demo": "tsx src/cli.ts --mode deterministic",
-    "demo:live": "tsx src/cli.ts --mode live",
-    "incident": "tsx src/cli.ts --mode deterministic",
-    "incident:live": "tsx src/cli.ts --mode live"
+    "test": "node --require ./scripts/node-userinfo-shim.cjs --import tsx --test tests/*.test.ts",
+    "dashboard": "node --require ./scripts/node-userinfo-shim.cjs --import tsx src/dashboard/server.ts",
+    "spike": "node --require ./scripts/node-userinfo-shim.cjs --import tsx src/live-spike.ts",
+    "demo": "node --require ./scripts/node-userinfo-shim.cjs --import tsx src/cli.ts --mode deterministic",
+    "demo:live": "node --require ./scripts/node-userinfo-shim.cjs --import tsx src/cli.ts --mode live",
+    "incident": "node --require ./scripts/node-userinfo-shim.cjs --import tsx src/cli.ts --mode deterministic",
+    "incident:live": "node --require ./scripts/node-userinfo-shim.cjs --import tsx src/cli.ts --mode live"
   },
   "dependencies": {
     "@mozaik-ai/core": "4.0.5"
