@@ -6,6 +6,12 @@ FAULTLINE turns a software incident into a shared investigation instead of a seq
 
 The dashboard is designed to make that behavior inspectable: it shows real execution overlap, the event journal, hypothesis revisions, safety-gate decisions, and bounded provider retries from recorded run artifacts.
 
+## Demo
+
+**Final hackathon demo (1:19):** https://youtu.be/LlfdnT195eM
+
+The video shows the deterministic judge-facing run for clarity, then switches to the completed Gemini-backed run that recovered from a real HTTP 429 using one bounded retry.
+
 ## Why concurrent agents?
 
 A production incident rarely has one useful line of inquiry. Metrics, traces, and recent changes can be investigated independently, so FAULTLINE does that work in parallel.
